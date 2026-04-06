@@ -47,6 +47,7 @@ python3 -m pytest tests/unit/ -v
 | `tests/unit/test_schema.py` | `DailyPrice` Pydantic model |
 | `tests/unit/test_cache.py` | Parquet save / load / invalidate |
 | `tests/unit/test_price_fetcher.py` | FinMind fetcher (mocked HTTP) |
+| `tests/unit/test_price_volume.py` | Price-volume strategy logic |
 
 ### `test_schema.py`
 
@@ -99,9 +100,29 @@ python3 -m pytest tests/unit/test_price_fetcher.py -v
 | `test_http_error_propagates` | HTTP 4xx/5xx surfaces as `HTTPError` |
 | `test_invalid_rows_are_dropped` | Bad OHLC row dropped silently |
 
+### `test_price_volume.py`
+
+```bash
+python3 -m pytest tests/unit/test_price_volume.py -v
+```
+
+| Test | Description |
+|---|---|
+| `test_breakout_with_volume_surge_generates_signal` | Breakout + volume surge → score 0.8 |
+| `test_breakout_with_strong_surge_scores_1` | Volume ≥ 2× threshold → score 1.0 |
+| `test_breakout_without_volume_scores_0_4` | Breakout, no volume confirmation → score 0.4 |
+| `test_no_breakout_produces_no_signal` | Flat price → no signal emitted |
+| `test_close_below_rolling_high_produces_no_signal` | Close < rolling high → no signal |
+| `test_signal_has_expected_fields` | stock_id, date, signal_name, score, direction all correct |
+| `test_signal_metadata_contains_expected_keys` | All metadata keys present |
+| `test_insufficient_history_produces_no_signal` | Too few rows for window → no signal |
+| `test_min_close_filter_skips_cheap_stocks` | Rows below `min_close` ignored |
+| `test_missing_required_column_raises` | `ValueError` on missing column |
+| `test_multi_stock_signals_are_attributed_correctly` | Signal attributed to correct stock_id |
+
 ---
 
-## Integration Test
+## Integration Tests
 
 > Requires a live FinMind API connection. Rate-limited without a token.
 
@@ -112,6 +133,7 @@ python3 -m pytest tests/integration/ -v
 | File | What it tests |
 |---|---|
 | `tests/integration/test_phase1_pipeline.py` | End-to-end: fetch → validate → cache → load |
+| `tests/integration/test_price_volume_pipeline.py` | End-to-end: fetch → price-volume strategy → signal validation |
 
 ### `test_phase1_pipeline.py`
 
@@ -128,6 +150,37 @@ python3 -m pytest tests/integration/ -v
 | `test_cached_close_prices_match_fetched` | Close values identical |
 | `test_cached_volumes_match_fetched` | Volume values identical |
 
+### `test_price_volume_pipeline.py`
+
+| Test | Description |
+|---|---|
+| `test_pipeline_returns_a_list` | `generate()` returns a list |
+| `test_pipeline_produces_signals` | At least one signal over a full year |
+| `test_all_signals_are_signal_instances` | All items are `Signal` objects |
+| `test_signal_stock_id_is_correct` | All signals attributed to `2330` |
+| `test_signal_dates_within_range` | All dates within requested range |
+| `test_signal_name_is_correct` | `signal_name == "price_volume"` |
+| `test_signal_scores_are_valid` | Scores are one of `{0.4, 0.8, 1.0}` |
+| `test_all_signals_are_bullish` | Direction is `BULLISH` for all signals |
+| `test_signal_value_is_positive` | Raw close price value is positive |
+| `test_signal_metadata_keys_present` | All required metadata keys present |
+
+---
+
+## Phase 2 Demo
+
+### `scripts/demo_price_volume.py` — Price-volume strategy demo
+
+Fetches 2330 daily price data, runs the price-volume breakout strategy, prints a signal summary, and saves a chart to `outputs/`.
+
+```bash
+python3 scripts/demo_price_volume.py
+```
+
+**Output:**
+- Console: total signal count, breakdown by score tier, latest 10 signals with date / score / close / volume ratio
+- `outputs/2330_price_volume.png` — closing price with signal markers (★ strong, ▲ surge, ● unconfirmed) + volume bars (red on signal days)
+
 ---
 
 ## Run Everything
@@ -142,6 +195,9 @@ python3 -m pytest tests/integration/ -v
 # All tests
 python3 -m pytest tests/ -v
 
-# Full demo
+# Phase 1 full demo
 python3 main.py
+
+# Phase 2 strategy demo
+python3 scripts/demo_price_volume.py
 ```
