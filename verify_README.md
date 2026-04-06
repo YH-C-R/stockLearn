@@ -1,4 +1,4 @@
-# Phase 1 — Verification Guide
+# Verification Guide — Phase 1 & 2
 
 All commands are run from the **project root**.
 
@@ -183,6 +183,49 @@ python3 scripts/demo_price_volume.py
 
 ---
 
+### `scripts/demo_pv_backtest.py` — PriceVolumeStrategy backtest
+
+Fetches price data, generates price-volume signals, runs the fixed-holding-period backtest, and prints metrics + sample trades.
+
+```bash
+python3 scripts/demo_pv_backtest.py
+```
+
+**Output:**
+- Trades count, win rate, avg return, cumulative return, max drawdown
+- Sample trade table (up to 10 rows)
+
+---
+
+### `scripts/demo_margin_trend.py` — Margin trend strategy demo
+
+Fetches price and margin data, runs the margin-trend strategy, prints signal summary with key margin columns, and saves a chart.
+
+```bash
+python3 scripts/demo_margin_trend.py
+```
+
+**Output:**
+- Console: total signals, bullish/bearish breakdown, latest 10 signals with date / score / direction / close / price change % / margin change % / margin balance
+- `outputs/2330_margin_trend.png` — closing price with bullish/bearish markers + margin purchase balance panel
+
+---
+
+### `scripts/demo_margin_backtest.py` — MarginTrendStrategy backtest
+
+Fetches price and margin data, generates margin-trend signals, runs the backtest, and prints metrics + sample trades.
+
+```bash
+python3 scripts/demo_margin_backtest.py
+```
+
+**Output:**
+- Trades count, win rate, avg return, cumulative return, max drawdown
+- Signal direction breakdown (bullish / bearish)
+- Sample trade table (up to 10 rows)
+
+---
+
 ## Run Everything
 
 ```bash
@@ -198,6 +241,11 @@ python3 -m pytest tests/ -v
 # Phase 1 full demo
 python3 main.py
 
-# Phase 2 strategy demo
+# Phase 2 — price-volume
 python3 scripts/demo_price_volume.py
+python3 scripts/demo_pv_backtest.py
+
+# Phase 2 — margin trend
+python3 scripts/demo_margin_trend.py
+python3 scripts/demo_margin_backtest.py
 ```

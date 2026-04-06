@@ -64,13 +64,62 @@ class DailyFundamentals(BaseModel):
 
 
 class MarginData(BaseModel):
-    """Placeholder for margin trading data (Phase 2)."""
+    """Daily margin financing and short-sale record for a Taiwan stock.
+
+    Primary strategy fields
+    -----------------------
+    margin_purchase_balance : Outstanding margin long positions (shares) — 融資餘額
+    short_sale_balance      : Outstanding margin short positions (shares) — 融券餘額
+
+    Flow fields (today's activity)
+    -------------------------------
+    margin_purchase_buy     : Shares bought on margin today — 融資買入
+    margin_purchase_sell    : Margin long positions closed today — 融資賣出
+    short_sale_buy          : Short positions covered today — 融券買入
+    short_sale_sell         : New short positions opened today — 融券賣出
+
+    Reference fields
+    ----------------
+    margin_purchase_limit   : Maximum allowed margin long balance
+    short_sale_limit        : Maximum allowed short balance
+    """
 
     stock_id: str
     date: date
-    margin_buy: Optional[int] = None    # 融資買入 (shares)
-    margin_sell: Optional[int] = None   # 融資賣出 (shares)
-    short_buy: Optional[int] = None     # 融券買入 (shares)
-    short_sell: Optional[int] = None    # 融券賣出 (shares)
+
+    # — Primary balance fields (required) ------------------------------------
+    margin_purchase_balance: int        # 融資餘額
+    short_sale_balance: int             # 融券餘額
+
+    # — Daily flow fields (optional: may be absent for some data sources) ----
+    margin_purchase_buy: Optional[int] = None   # 融資買入
+    margin_purchase_sell: Optional[int] = None  # 融資賣出
+    short_sale_buy: Optional[int] = None        # 融券買入
+    short_sale_sell: Optional[int] = None       # 融券賣出
+
+    # — Limit / capacity fields (optional) -----------------------------------
+    margin_purchase_limit: Optional[int] = None
+    short_sale_limit: Optional[int] = None
+
+    @field_validator("stock_id")
+    @classmethod
+    def stock_id_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("stock_id must not be empty")
+        return v
+
+    @field_validator(
+        "margin_purchase_balance", "short_sale_balance",
+        "margin_purchase_buy", "margin_purchase_sell",
+        "short_sale_buy", "short_sale_sell",
+        "margin_purchase_limit", "short_sale_limit",
+        mode="before",
+    )
+    @classmethod
+    def non_negative_int(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v < 0:
+            raise ValueError("margin fields must be non-negative")
+        return v
 
     model_config = {"frozen": True}

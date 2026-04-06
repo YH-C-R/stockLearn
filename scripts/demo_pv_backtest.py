@@ -62,7 +62,12 @@ def main() -> None:
     # 2. Generate signals -----------------------------------------------------
     section("2. Running PriceVolumeStrategy")
     strategy = PriceVolumeStrategy()
-    signals  = strategy.generate(df)
+    print(
+        f"  price_window={strategy.price_window}  "
+        f"volume_window={strategy.volume_window}  "
+        f"volume_surge_mult={strategy.volume_surge_mult}×"
+    )
+    signals = strategy.generate(df)
     print(f"  {len(signals)} signal(s) generated  "
           f"(min_score filter: {BACKTEST_CONFIG.min_score})")
 
@@ -71,16 +76,15 @@ def main() -> None:
     print(f"  holding_days={BACKTEST_CONFIG.holding_days}  "
           f"buy_on_next_day={BACKTEST_CONFIG.buy_on_next_day}")
 
-    signals_df = signals_to_df(signals)
-    trades, metrics = run_simple_backtest(df, signals_df, BACKTEST_CONFIG)
+    trades, metrics = run_simple_backtest(df, signals_to_df(signals), BACKTEST_CONFIG)
 
     # 4. Metrics --------------------------------------------------------------
     section("4. Results")
-    print(f"  Trades          : {metrics['num_trades']}")
-    print(f"  Win rate        : {metrics['win_rate_pct']:.1f}%")
-    print(f"  Avg return      : {metrics['avg_return_pct']:+.2f}%")
-    print(f"  Cumulative return: {metrics['cumulative_return_pct']:+.2f}%")
-    print(f"  Max drawdown    : {metrics['max_drawdown_pct']:.2f}%")
+    print(f"  Trades            : {metrics['num_trades']}")
+    print(f"  Win rate          : {metrics['win_rate_pct']:.1f}%")
+    print(f"  Avg return        : {metrics['avg_return_pct']:+.2f}%")
+    print(f"  Cumulative return : {metrics['cumulative_return_pct']:+.2f}%")
+    print(f"  Max drawdown      : {metrics['max_drawdown_pct']:.2f}%")
 
     # 5. Sample trades --------------------------------------------------------
     if not trades.empty:
