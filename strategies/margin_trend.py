@@ -4,62 +4,76 @@ from signals.base import Signal, make_signal
 from strategies.base import BaseStrategy
 
 _REQUIRED_PRICE_COLS  = ["stock_id", "date", "close"]
-_REQUIRED_MARGIN_COLS = ["stock_id", "date", "margin_purchase_balance", "short_sale_balance"]
+_REQUIRED_MARGIN_COLS = ["stock_id", "date", "margin_purchase_balance"]
+
+# short_sale_balance is retained in metadata when present but is not required
+# for signal generation. Include it in a future sub-signal when ready.
+_OPTIONAL_MARGIN_COLS = ["short_sale_balance"]
 
 
 class MarginTrendStrategy(BaseStrategy):
     """Price-vs-margin divergence strategy.
 
-    Combines two independent sub-signals, each scored in [-1, 1], then
-    averages them into a final score.
+    Combines two independent sub-signals into a weighted final score.
 
     Sub-signal 1 — Margin financing trend (margin_signal)
     ------------------------------------------------------
-    Compares the N-day percentage change in margin_purchase_balance against
-    a threshold.
+    Compares the N-day pct-change in margin_purchase_balance against thresholds.
 
-      margin_change > +surge_threshold  →  crowded long / over-leveraged
-                                           (bearish: retail piling in on margin)
-      margin_change < -unwind_threshold →  margin being actively unwound
-                                           (bullish: forced sellers clearing out)
-      otherwise                          →  neutral
+      margin_change > +surge_threshold   →  -1.0  (retail crowding in — bearish)
+      margin_change < -unwind_threshold  →  +1.0  (margin unwinding — bullish)
+      otherwise                          →   0.0  (neutral)
 
     Sub-signal 2 — Price vs margin divergence (divergence_signal)
     --------------------------------------------------------------
-    Compares the N-day price return with the direction of margin balance change.
-    Healthy rallies see price rise with FLAT or FALLING margin (smart money leads).
-    Unhealthy rallies see price rise with RISING margin (retail chases with leverage).
+    Compares N-day price direction with margin direction.
 
-      price up   + margin down  →  bullish  (+1.0)
-      price down + margin up    →  bearish  (-1.0)
-      price up   + margin up    →  weakly bearish (-0.4, over-leveraged rally)
-      price down + margin down  →  weakly bullish (+0.4, margin unwinding = clean-up)
-      otherwise                 →  neutral (0.0)
+      price up   + margin down  →  +1.0   healthy rally
+      price down + margin up    →  -1.0   dangerous — price falling on rising leverage
+      price up   + margin up    →  -0.4   leveraged rally — weaker
+      price down + margin down  →  +0.4   base-building — margin cleaning up
+      otherwise                 →   0.0   neutral
 
-    Final score = mean(margin_signal, divergence_signal), clamped to [-1, 1].
-    Only rows where |final_score| >= min_abs_score emit a Signal.
+    Final score = margin_weight * margin_signal + divergence_weight * divergence_signal
+    Normalised to [-1, 1]. Only emitted when |score| >= min_abs_score.
+
+    # Future extension point
+    # ----------------------
+    # A cooldown / dedup filter can be added here before appending to signals:
+    #   last_signal_date = last_signal_dates.get(row.stock_id)
+    #   if last_signal_date and (row.date - last_signal_date).days < cooldown_days:
+    #       continue
+    # Intentionally omitted for now to keep the logic simple.
 
     Parameters
     ----------
-    window            : Lookback window (days) for pct-change calculations.
-    surge_threshold   : Margin balance pct-change above this → crowded (bearish).
-    unwind_threshold  : Margin balance pct-change below negative this → bullish.
-    min_abs_score     : Minimum |score| to emit a signal (filters weak signals).
+    window             : Lookback window (days) for pct-change calculations.
+    surge_threshold    : Margin pct-change above this → bearish (-1.0).
+    unwind_threshold   : Margin pct-change below negative this → bullish (+1.0).
+    min_abs_score      : Minimum |score| required to emit a signal.
+    margin_weight      : Weight applied to margin_signal in the final score.
+    divergence_weight  : Weight applied to divergence_signal in the final score.
     """
 
     name = "margin_trend"
 
     def __init__(
         self,
-        window: int            = 5,
-        surge_threshold: float = 0.05,   # +5 % margin balance growth → crowded
-        unwind_threshold: float = 0.03,  # -3 % margin balance shrink → clean
-        min_abs_score: float   = 0.3,
+        window: int              = 5,
+        surge_threshold: float   = 0.05,
+        unwind_threshold: float  = 0.03,
+        min_abs_score: float     = 0.5,
+        margin_weight: float     = 0.5,
+        divergence_weight: float = 0.5,
     ) -> None:
-        self.window           = window
-        self.surge_threshold  = surge_threshold
-        self.unwind_threshold = unwind_threshold
-        self.min_abs_score    = min_abs_score
+        if abs(margin_weight + divergence_weight) < 1e-9:
+            raise ValueError("margin_weight + divergence_weight must not sum to zero")
+        self.window            = window
+        self.surge_threshold   = surge_threshold
+        self.unwind_threshold  = unwind_threshold
+        self.min_abs_score     = min_abs_score
+        self.margin_weight     = margin_weight
+        self.divergence_weight = divergence_weight
 
     def generate(
         self,
@@ -73,8 +87,7 @@ class MarginTrendStrategy(BaseStrategy):
         Parameters
         ----------
         price_df  : Daily OHLCV DataFrame (stock_id, date, close, …).
-        margin_df : Daily margin DataFrame from fetch_margin_data()
-                    (stock_id, date, margin_purchase_balance, short_sale_balance).
+        margin_df : Daily margin DataFrame (stock_id, date, margin_purchase_balance, …).
         """
         self.validate_columns(price_df,  _REQUIRED_PRICE_COLS,  "price_df")
         self.validate_columns(margin_df, _REQUIRED_MARGIN_COLS, "margin_df")
@@ -85,9 +98,14 @@ class MarginTrendStrategy(BaseStrategy):
         price_df["date"]  = pd.to_datetime(price_df["date"]).dt.date
         margin_df["date"] = pd.to_datetime(margin_df["date"]).dt.date
 
+        # Carry short_sale_balance into metadata if the column exists
+        margin_cols = ["stock_id", "date", "margin_purchase_balance"]
+        if "short_sale_balance" in margin_df.columns:
+            margin_cols.append("short_sale_balance")
+
         df = pd.merge(
             price_df[["stock_id", "date", "close"]],
-            margin_df[["stock_id", "date", "margin_purchase_balance", "short_sale_balance"]],
+            margin_df[margin_cols],
             on=["stock_id", "date"],
             how="inner",
         )
@@ -103,34 +121,46 @@ class MarginTrendStrategy(BaseStrategy):
             lambda x: x.pct_change(self.window)
         )
 
+        total_weight = self.margin_weight + self.divergence_weight
+
         signals: list[Signal] = []
         for row in df.itertuples(index=False):
             if pd.isna(row.margin_change) or pd.isna(row.price_change):
                 continue
 
-            margin_score     = self._margin_signal(row.margin_change)
-            diverge_score    = self._divergence_signal(row.price_change, row.margin_change)
-            final_score      = round((margin_score + diverge_score) / 2, 4)
+            margin_score   = self._margin_signal(row.margin_change)
+            diverge_score  = self._divergence_signal(row.price_change, row.margin_change)
+            raw_score      = (self.margin_weight * margin_score
+                              + self.divergence_weight * diverge_score)
+            final_score    = round(raw_score / total_weight, 4)
 
             if abs(final_score) < self.min_abs_score:
                 continue
+
+            final_score = max(-1.0, min(1.0, final_score))
+
+            short_bal = getattr(row, "short_sale_balance", None)
+            meta: dict = {
+                "close":                   round(row.close, 2),
+                "price_change_pct":        round(row.price_change * 100, 4),
+                "margin_change_pct":       round(row.margin_change * 100, 4),
+                "margin_purchase_balance": int(row.margin_purchase_balance),
+                "margin_signal":           margin_score,
+                "divergence_signal":       diverge_score,
+                "margin_weight":           self.margin_weight,
+                "divergence_weight":       self.divergence_weight,
+                "window":                  self.window,
+            }
+            if short_bal is not None:
+                meta["short_sale_balance"] = int(short_bal)
 
             signals.append(make_signal(
                 stock_id=row.stock_id,
                 date=row.date,
                 signal_name=self.name,
                 signal_value=round(row.margin_purchase_balance, 0),
-                score=max(-1.0, min(1.0, final_score)),
-                metadata={
-                    "close":                    round(row.close, 2),
-                    "price_change_pct":         round(row.price_change * 100, 4),
-                    "margin_change_pct":        round(row.margin_change * 100, 4),
-                    "margin_purchase_balance":  int(row.margin_purchase_balance),
-                    "short_sale_balance":       int(row.short_sale_balance),
-                    "margin_signal":            margin_score,
-                    "divergence_signal":        diverge_score,
-                    "window":                   self.window,
-                },
+                score=final_score,
+                metadata=meta,
             ))
 
         return signals
@@ -140,22 +170,20 @@ class MarginTrendStrategy(BaseStrategy):
     # ------------------------------------------------------------------
 
     def _margin_signal(self, margin_change: float) -> float:
-        """Score based solely on the direction and magnitude of margin growth."""
         if margin_change > self.surge_threshold:
-            return -1.0   # over-leveraged rally — bearish
+            return -1.0
         if margin_change < -self.unwind_threshold:
-            return +1.0   # margin unwinding — bullish
+            return +1.0
         return 0.0
 
     def _divergence_signal(self, price_change: float, margin_change: float) -> float:
-        """Score based on the relationship between price direction and margin direction."""
         price_up   = price_change  > 0
         price_down = price_change  < 0
         margin_up  = margin_change > 0
         margin_dn  = margin_change < 0
 
-        if price_up   and margin_dn:  return +1.0   # healthy rally
-        if price_down and margin_up:  return -1.0   # price falling, more leverage — dangerous
-        if price_up   and margin_up:  return -0.4   # rally on leverage — weaker
-        if price_down and margin_dn:  return +0.4   # price dips but margin cleans up — base-build
+        if price_up   and margin_dn:  return +1.0
+        if price_down and margin_up:  return -1.0
+        if price_up   and margin_up:  return -0.4
+        if price_down and margin_dn:  return +0.4
         return 0.0
