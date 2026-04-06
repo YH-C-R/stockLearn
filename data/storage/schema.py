@@ -51,14 +51,63 @@ class DailyPrice(BaseModel):
     model_config = {"frozen": True}
 
 
-class DailyFundamentals(BaseModel):
-    """Placeholder for per-share fundamental data (Phase 2)."""
+class QuarterlyFundamentals(BaseModel):
+    """Quarterly fundamental record for a Taiwan stock.
+
+    Core EPS fields
+    ---------------
+    report_period : Quarter-end date the figures apply to (e.g. 2024-03-31 = Q1).
+    eps           : Basic earnings per share for the quarter (每股盈餘).
+
+    Optional fields
+    ---------------
+    release_date  : Date the report was officially published. May differ from
+                    report_period by 1–3 months. Use this for point-in-time
+                    backtesting to avoid lookahead bias.
+    diluted_eps   : Diluted EPS when available (稀釋每股盈餘).
+
+    Extension placeholders (Phase 3+)
+    ----------------------------------
+    revenue       : Quarterly revenue (TWD, thousands).
+    pe_ratio      : Price-to-earnings ratio at release_date.
+    pb_ratio      : Price-to-book ratio at release_date.
+    yoy_eps_growth: Year-over-year EPS growth rate (decimal, e.g. 0.15 = +15%).
+    """
 
     stock_id: str
-    date: date
-    eps: Optional[Decimal] = None
-    pe_ratio: Optional[Decimal] = None
-    pb_ratio: Optional[Decimal] = None
+    report_period: date
+    eps: float
+
+    # — Optional enrichment fields ------------------------------------------
+    release_date: Optional[date] = None
+    diluted_eps: Optional[float] = None
+
+    # — Extension placeholders (populate in Phase 3) ------------------------
+    revenue: Optional[float] = None        # TWD thousands
+    pe_ratio: Optional[float] = None
+    pb_ratio: Optional[float] = None
+    yoy_eps_growth: Optional[float] = None  # decimal
+
+    @field_validator("stock_id")
+    @classmethod
+    def stock_id_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("stock_id must not be empty")
+        return v
+
+    @field_validator("release_date")
+    @classmethod
+    def release_date_not_before_report(
+        cls, v: Optional[date], info: object
+    ) -> Optional[date]:
+        # Guard against data entry errors — release cannot precede quarter end
+        report = getattr(info, "data", {}).get("report_period")
+        if v is not None and report is not None and v < report:
+            raise ValueError(
+                f"release_date ({v}) cannot be before report_period ({report})"
+            )
+        return v
 
     model_config = {"frozen": True}
 
