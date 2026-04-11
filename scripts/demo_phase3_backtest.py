@@ -1,12 +1,13 @@
-"""Demo: Phase 3 multi-stock portfolio backtest.
+"""Demo: Phase 3 multi-stock portfolio backtest + parameter sweep.
 
 Pipeline
 --------
   1. Fetch price, margin, and fundamentals for a small universe.
   2. Screen stocks by minimum volume / price.
-  3. Run CombinedStrategy → aggregate → rank top-N per date.
-  4. Feed ranked selections into PortfolioBacktest.
-  5. Print portfolio metrics and trade samples.
+  3. Run CombinedStrategy once (min_final_score=0 to retain all signals).
+  4. Single-run backtest with default parameters (for inspection).
+  5. Parameter sweep over holding_days × top_n × min_final_score.
+  6. Print sweep results sorted by cumulative return.
 
 Run
 ---
@@ -15,6 +16,7 @@ Run
 
 import sys
 from datetime import date
+from itertools import product
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -22,6 +24,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd
 
 from backtesting.portfolio import PortfolioConfig, run_portfolio_backtest
+from backtesting.report import (
+    print_backtest_summary,
+    print_per_stock_summary,
+    print_selected_stocks,
+    print_trade_sample,
+)
 from config.credentials import FINMIND_TOKEN
 from data.fetchers.fundamentals import fetch_eps_data
 from data.fetchers.margin import fetch_margin_data
@@ -30,7 +38,7 @@ from strategies.combined import CombinedStrategy, CombinedStrategyConfig, rank_s
 from universe.screener import ScreenerConfig, screen
 
 # ---------------------------------------------------------------------------
-# Parameters — edit these to experiment
+# Universe & date range
 # ---------------------------------------------------------------------------
 
 UNIVERSE = [
@@ -44,30 +52,37 @@ UNIVERSE = [
     "2357",   # Asustek
 ]
 
-START_DATE = date(2024, 1, 1)
-END_DATE   = date(2024, 12, 31)
-FUND_START = date(2022, 1, 1)   # needs ~5 quarters for YoY
+START_DATE = date(2022, 1, 1)
+END_DATE   = date(2022, 12, 31)
+FUND_START = date(2020, 1, 1)   # needs ~5 quarters for YoY
 
-TOP_N      = 3   # stocks selected per signal date
+# ---------------------------------------------------------------------------
+# Default single-run parameters (used for sections 4–8)
+# ---------------------------------------------------------------------------
 
-PORTFOLIO_CONFIG = PortfolioConfig(
-    holding_days    = 10,
-    top_n           = TOP_N,
-    min_score       = 0.3,
-    buy_on_next_day = True,
-)
-
-COMBINED_CONFIG = CombinedStrategyConfig(
-    mt_cooldown_days    = 10,
-    dd_persistence_days = 5,
-    min_final_score     = 0.3,
-)
+DEFAULT_TOP_N         = 3
+DEFAULT_HOLDING_DAYS  = 20
+DEFAULT_MIN_SCORE     = 0.3
 
 SCREENER_CONFIG = ScreenerConfig(
     min_avg_volume = 500_000,
     min_price      = 10.0,
     volume_window  = 20,
 )
+
+COMBINED_CONFIG = CombinedStrategyConfig(
+    mt_cooldown_days    = 10,
+    dd_persistence_days = 5,
+    min_final_score     = 0.0,   # keep all signals — sweep filters later
+)
+
+# ---------------------------------------------------------------------------
+# Parameter sweep grid
+# ---------------------------------------------------------------------------
+
+SWEEP_HOLDING_DAYS   = [5, 10, 20]
+SWEEP_TOP_N          = [3, 5]
+SWEEP_MIN_SCORE      = [0.2, 0.3, 0.4]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -78,7 +93,6 @@ def section(title: str) -> None:
 
 
 def fetch_all(stock_ids: list[str], token: str | None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Fetch price, margin, and fundamentals for all stocks."""
     price_frames, margin_frames, fund_frames = [], [], []
 
     for sid in stock_ids:
@@ -86,12 +100,10 @@ def fetch_all(stock_ids: list[str], token: str | None) -> tuple[pd.DataFrame, pd
             price_frames.append(fetch_daily_price(sid, START_DATE, END_DATE, token=token))
         except Exception as exc:
             print(f"    price  {sid}: FAILED — {exc}")
-
         try:
             margin_frames.append(fetch_margin_data(sid, START_DATE, END_DATE, token=token))
         except Exception as exc:
             print(f"    margin {sid}: FAILED — {exc}")
-
         try:
             fund_frames.append(fetch_eps_data(sid, FUND_START, END_DATE, token=token))
         except Exception as exc:
@@ -103,6 +115,74 @@ def fetch_all(stock_ids: list[str], token: str | None) -> tuple[pd.DataFrame, pd
     return concat(price_frames), concat(margin_frames), concat(fund_frames)
 
 
+def run_sweep(
+    full_result: pd.DataFrame,
+    price_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Run all parameter combinations and return a summary DataFrame."""
+    rows = []
+    combos = list(product(SWEEP_HOLDING_DAYS, SWEEP_TOP_N, SWEEP_MIN_SCORE))
+    print(f"  Running {len(combos)} combinations …")
+
+    for holding_days, top_n, min_score in combos:
+        # Filter signals by score threshold, then rank
+        filtered = full_result[full_result["final_score"] >= min_score]
+        if filtered.empty:
+            rows.append({
+                "holding_days": holding_days, "top_n": top_n,
+                "min_score": min_score, "trades": 0,
+                "cum_return_%": 0.0, "win_rate_%": 0.0, "max_dd_%": 0.0,
+            })
+            continue
+
+        ranked = rank_signals(filtered, top_n=top_n)
+        cfg    = PortfolioConfig(
+            holding_days    = holding_days,
+            top_n           = top_n,
+            min_score       = min_score,
+            buy_on_next_day = True,
+        )
+        _, metrics = run_portfolio_backtest(price_df, ranked, cfg)
+
+        rows.append({
+            "holding_days":  holding_days,
+            "top_n":         top_n,
+            "min_score":     min_score,
+            "trades":        metrics["num_trades"],
+            "cum_return_%":  metrics["cumulative_return_pct"],
+            "win_rate_%":    metrics["win_rate_pct"],
+            "max_dd_%":      metrics["max_drawdown_pct"],
+        })
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values("cum_return_%", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def print_sweep_table(sweep_df: pd.DataFrame) -> None:
+    """Print the sweep results as a fixed-width table."""
+    if sweep_df.empty:
+        print("  (no results)\n")
+        return
+
+    header = (
+        f"  {'hold':>4}  {'top_n':>5}  {'min_sc':>6}  "
+        f"{'trades':>6}  {'cum_ret%':>9}  {'win%':>6}  {'max_dd%':>8}"
+    )
+    print(header)
+    print("  " + "─" * (len(header) - 2))
+
+    for row in sweep_df.itertuples(index=False):
+        # positional indexing avoids namedtuple issues with "%" in column names
+        print(
+            f"  {row[0]:>4}  {row[1]:>5}  {row[2]:>6.1f}  "
+            f"  {row[3]:>5}  {row[4]:>+9.2f}  {row[5]:>6.1f}  {row[6]:>8.2f}"
+        )
+    print()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -110,7 +190,7 @@ def fetch_all(stock_ids: list[str], token: str | None) -> tuple[pd.DataFrame, pd
 def main() -> None:
     token = FINMIND_TOKEN or None
 
-    # ── 1. Fetch ─────────────────────────────────────────────────────────────
+    # ── 1. Fetch ──────────────────────────────────────────────────────────────
     section(f"1. Fetching data  ({len(UNIVERSE)} stocks,  {START_DATE} → {END_DATE})")
     price_df, margin_df, fund_df = fetch_all(UNIVERSE, token)
     print(f"  price rows   : {len(price_df)}")
@@ -135,82 +215,82 @@ def main() -> None:
     margin_df = margin_df[margin_df["stock_id"].isin(screened_ids)] if not margin_df.empty else margin_df
     fund_df   = fund_df[fund_df["stock_id"].isin(screened_ids)]     if not fund_df.empty  else fund_df
 
-    # ── 3. Combined strategy ──────────────────────────────────────────────────
-    section("3. Running CombinedStrategy")
+    # ── 3. Combined strategy (run once, no score filter yet) ──────────────────
+    section("3. Running CombinedStrategy  (min_final_score=0 — all signals retained)")
     strategy = CombinedStrategy(COMBINED_CONFIG)
-    result = strategy.generate(
-        price_df       = price_df,
-        margin_df      = margin_df if not margin_df.empty else None,
-        fundamentals_df= fund_df   if not fund_df.empty  else None,
+    full_result = strategy.generate(
+        price_df        = price_df,
+        margin_df       = margin_df if not margin_df.empty else None,
+        fundamentals_df = fund_df   if not fund_df.empty  else None,
     )
 
-    summary = strategy.summary(result)
-    print(f"  Combined signals  : {summary['total_signals']}")
-    print(f"  Score range       : {summary['score_mean']} avg,  {summary['score_max']} max")
+    summary = strategy.summary(full_result)
+    print(f"  Total signals : {summary['total_signals']}")
+    print(f"  Score range   : {summary['score_mean']} avg,  {summary['score_max']} max")
     if summary["date_range"]:
-        print(f"  Date range        : {summary['date_range'][0]}  →  {summary['date_range'][1]}")
+        print(f"  Date range    : {summary['date_range'][0]}  →  {summary['date_range'][1]}")
 
-    if result.empty:
+    if full_result.empty:
         print("\n  No combined signals produced — aborting.")
         return
 
-    # ── 4. Rank and select top-N ──────────────────────────────────────────────
-    section(f"4. Ranking — top {TOP_N} stocks per date")
-    ranked = rank_signals(result, top_n=TOP_N)
-    print(f"  Selection rows    : {len(ranked)}")
-    print(f"  Unique dates      : {ranked['date'].nunique()}")
-    print(f"  Unique stocks     : {ranked['stock_id'].nunique()}")
+    # ── 4. Single-run with default parameters ─────────────────────────────────
+    section(f"4. Single-run backtest  (hold={DEFAULT_HOLDING_DAYS}  top_n={DEFAULT_TOP_N}  min_score={DEFAULT_MIN_SCORE})")
+    default_result = full_result[full_result["final_score"] >= DEFAULT_MIN_SCORE]
+    ranked = rank_signals(default_result, top_n=DEFAULT_TOP_N)
 
-    # Sample: latest 5 signal dates
-    latest_dates = sorted(ranked["date"].unique())[-5:]
-    sample = ranked[ranked["date"].isin(latest_dates)]
-    print(f"\n  Sample selections (latest {len(latest_dates)} dates):\n")
-    print(f"  {'date':<12}  {'rank':>4}  {'stock_id':>10}  {'final_score':>12}")
-    print("  " + "─" * 44)
-    prev = None
-    for row in sample.itertuples(index=False):
-        if prev and row.date != prev:
-            print()
-        print(f"  {str(row.date):<12}  {row.rank:>4}  {row.stock_id:>10}  {row.final_score:>12.4f}")
-        prev = row.date
+    print(f"  Selection rows : {len(ranked)}")
+    print(f"  Unique dates   : {ranked['date'].nunique()}")
+    print(f"  Unique stocks  : {ranked['stock_id'].nunique()}")
+    print("  Sample selections (latest 5 dates):")
+    print_selected_stocks(ranked, last_n_dates=5)
 
-    # ── 5. Portfolio backtest ─────────────────────────────────────────────────
-    section("5. Portfolio backtest")
-    print(
-        f"  holding_days={PORTFOLIO_CONFIG.holding_days}  "
-        f"top_n={PORTFOLIO_CONFIG.top_n}  "
-        f"min_score={PORTFOLIO_CONFIG.min_score}  "
-        f"buy_on_next_day={PORTFOLIO_CONFIG.buy_on_next_day}"
+    default_cfg = PortfolioConfig(
+        holding_days    = DEFAULT_HOLDING_DAYS,
+        top_n           = DEFAULT_TOP_N,
+        min_score       = DEFAULT_MIN_SCORE,
+        buy_on_next_day = True,
     )
+    trades, metrics = run_portfolio_backtest(price_df, ranked, default_cfg)
 
-    trades, metrics = run_portfolio_backtest(price_df, ranked, PORTFOLIO_CONFIG)
+    section("5. Default-run metrics")
+    print_backtest_summary(metrics)
 
-    # ── 6. Metrics ────────────────────────────────────────────────────────────
-    section("6. Portfolio metrics")
-    print(f"  Trades            : {metrics['num_trades']}")
-    print(f"  Trading days      : {metrics['num_trading_days']}")
-    print(f"  Win rate          : {metrics['win_rate_pct']:.1f}%")
-    print(f"  Avg return / trade: {metrics['avg_return_pct']:+.2f}%")
-    print(f"  Cumulative return : {metrics['cumulative_return_pct']:+.2f}%")
-    print(f"  Max drawdown      : {metrics['max_drawdown_pct']:.2f}%")
-
-    # ── 7. Sample trades ──────────────────────────────────────────────────────
     if not trades.empty:
-        section("7. Sample trades (first 10)")
-        cols = ["signal_date", "stock_id", "entry_date", "exit_date",
-                "entry_price", "exit_price", "return_pct", "score"]
-        print(trades[cols].head(10).to_string(index=False))
+        section("6. Sample trades (first 10)")
+        print_trade_sample(trades)
 
-        # Per-stock summary
-        section("8. Per-stock summary")
-        per_stock = (
-            trades.groupby("stock_id")["return_pct"]
-            .agg(trades="count", avg_return="mean", win_rate=lambda x: (x > 0).mean() * 100)
-            .round(2)
-            .sort_values("avg_return", ascending=False)
-            .reset_index()
-        )
-        print(per_stock.to_string(index=False))
+        section("7. Per-stock summary")
+        print_per_stock_summary(trades)
+
+    # ── 5. Parameter sweep ────────────────────────────────────────────────────
+    section(
+        f"8. Parameter sweep\n"
+        f"   holding_days : {SWEEP_HOLDING_DAYS}\n"
+        f"   top_n        : {SWEEP_TOP_N}\n"
+        f"   min_score    : {SWEEP_MIN_SCORE}"
+    )
+    sweep_df = run_sweep(full_result, price_df)
+
+    section("9. Sweep results  (sorted by cumulative return ↓)")
+    print_sweep_table(sweep_df)
+
+    # Best and worst
+    best  = sweep_df.iloc[0]
+    worst = sweep_df.iloc[-1]
+    print(
+        f"  Best : hold={int(best['holding_days'])}  top_n={int(best['top_n'])}"
+        f"  min_score={best['min_score']:.1f}"
+        f"  →  cum_ret={best['cum_return_%']:+.2f}%"
+        f"  win={best['win_rate_%']:.1f}%  dd={best['max_dd_%']:.2f}%"
+    )
+    print(
+        f"  Worst: hold={int(worst['holding_days'])}  top_n={int(worst['top_n'])}"
+        f"  min_score={worst['min_score']:.1f}"
+        f"  →  cum_ret={worst['cum_return_%']:+.2f}%"
+        f"  win={worst['win_rate_%']:.1f}%  dd={worst['max_dd_%']:.2f}%"
+    )
+    print()
 
     section("Done")
 

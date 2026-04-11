@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd
 
 from backtesting.engine import BacktestConfig, run_simple_backtest
+from backtesting.report import print_backtest_summary, print_trade_sample
 from config.credentials import FINMIND_TOKEN
 from data.fetchers.margin import fetch_margin_data
 from data.fetchers.price import fetch_daily_price
@@ -98,16 +99,12 @@ def main() -> None:
 
     # 4. Metrics --------------------------------------------------------------
     section("4. Results")
-    print(f"  Trades            : {metrics['num_trades']}")
-    print(f"  Win rate          : {metrics['win_rate_pct']:.1f}%")
-    print(f"  Avg return        : {metrics['avg_return_pct']:+.2f}%")
-    print(f"  Cumulative return : {metrics['cumulative_return_pct']:+.2f}%")
-    print(f"  Max drawdown      : {metrics['max_drawdown_pct']:.2f}%")
+    print_backtest_summary(metrics)
 
     # 5. Sample trades --------------------------------------------------------
     if not trades.empty:
         section("5. Sample trades (up to 10)")
-        print(trades.head(10).to_string(index=False))
+        print_trade_sample(trades)
 
     section("Done")
 

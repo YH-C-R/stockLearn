@@ -1,6 +1,13 @@
-"""Simple fixed-holding-period backtesting engine.
+"""Single-instrument fixed-holding-period backtest engine.
 
-Assumes long-only trades, one position per signal, no portfolio management.
+Simulates a sequence of long-only trades on a single price series.
+One trade is generated per qualifying signal; trades do not overlap and
+there is no portfolio management, capital allocation, or cash accounting.
+
+Each trade's return_pct is computed independently as
+``(exit_price / entry_price - 1) * 100``.
+
+For multi-stock backtesting use ``backtesting.portfolio`` instead.
 """
 
 from dataclasses import dataclass
@@ -9,6 +16,8 @@ from typing import Optional
 
 import pandas as pd
 
+from backtesting.metrics import compute_trade_metrics
+
 
 @dataclass
 class BacktestConfig:
@@ -16,11 +25,16 @@ class BacktestConfig:
 
     Attributes
     ----------
-    holding_days    : Number of trading days to hold after entry.
+    holding_days    : Number of trading days between entry and exit.
+                      An entry on day 0 exits on trading day N, so the
+                      position spans exactly holding_days intervals
+                      (e.g. holding_days=5 covers one trading week).
     min_score       : Only signals with score >= this threshold are traded.
-    buy_on_next_day : If True, enter on the trading day after the signal date.
-                      If False, enter on the signal date itself (lookahead — use
-                      only for research).
+                      Signals below this are silently skipped.
+    buy_on_next_day : If True, enter on the trading day after the signal
+                      date (default, avoids same-bar lookahead).
+                      If False, enter on the signal date itself — only
+                      suitable for research; introduces lookahead bias.
     """
     holding_days: int   = 5
     min_score: float    = 0.8
@@ -122,36 +136,8 @@ def run_simple_backtest(
         return _empty_trades(), _empty_metrics()
 
     trades  = pd.DataFrame(rows)
-    metrics = _compute_metrics(trades)
+    metrics = compute_trade_metrics(trades["return_pct"])
     return trades, metrics
-
-
-# ---------------------------------------------------------------------------
-# Metrics
-# ---------------------------------------------------------------------------
-
-def _compute_metrics(trades: pd.DataFrame) -> dict:
-    returns = trades["return_pct"]
-    n       = len(trades)
-
-    cumulative = ((1 + returns / 100).prod() - 1) * 100
-    max_dd     = _max_drawdown(returns)
-
-    return {
-        "num_trades":        n,
-        "win_rate_pct":      round((returns > 0).sum() / n * 100, 2),
-        "avg_return_pct":    round(returns.mean(), 4),
-        "cumulative_return_pct": round(cumulative, 4),
-        "max_drawdown_pct":  round(max_dd, 4),
-    }
-
-
-def _max_drawdown(returns_pct: pd.Series) -> float:
-    """Maximum peak-to-trough drawdown across the equity curve."""
-    equity = (1 + returns_pct / 100).cumprod()
-    peak   = equity.cummax()
-    dd     = (equity - peak) / peak * 100
-    return float(dd.min())   # negative value; 0.0 if no drawdown
 
 
 # ---------------------------------------------------------------------------

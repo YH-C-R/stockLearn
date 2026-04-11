@@ -1,7 +1,17 @@
-"""Multi-stock portfolio backtesting engine.
+"""Equal-weight multi-stock trade simulator.
 
-Simulates equal-capital allocation across a ranked set of signals,
-with fixed holding periods and daily rebalancing.
+Treats each signal as an independent trade with equal capital weight.
+Positions are sized equally — there is no cash accounting, no reinvestment
+between trades, and no overlap tracking.  Each trade's return_pct is
+computed independently as (exit_price / entry_price - 1) * 100.
+
+Portfolio-level metrics (cumulative return, max drawdown) are derived from
+the daily basket average — signals that share the same entry_date are grouped
+and their returns averaged before compounding.  This avoids counting the same
+trading day multiple times when several stocks are held simultaneously.
+
+This is a simulation layer suitable for strategy validation, not a full
+cash-managed portfolio engine.
 """
 
 from dataclasses import dataclass
@@ -10,6 +20,8 @@ from typing import Optional
 
 import pandas as pd
 
+from backtesting.metrics import avg_return, cumulative_return, max_drawdown, win_rate
+
 
 @dataclass
 class PortfolioConfig:
@@ -17,16 +29,22 @@ class PortfolioConfig:
 
     Attributes
     ----------
-    holding_days    : Number of trading days to hold each position.
-    top_n           : Maximum number of stocks to hold simultaneously.
-    min_score       : Only signals with final_score >= this are traded.
-    buy_on_next_day : If True, enter on the trading day after the signal date.
-    initial_capital : Starting capital (used for equity curve calculation).
+    holding_days    : Number of trading days between entry and exit.
+                      An entry on day 0 exits on trading day N, so the
+                      position is held for exactly holding_days intervals
+                      (e.g. holding_days=5 spans one trading week).
+    top_n           : Maximum number of stocks selected per signal date.
+    min_score       : Signals with final_score below this are skipped.
+    buy_on_next_day : If True, enter on the trading day after the signal
+                      date (default, avoids same-bar lookahead).
+                      If False, enter on the signal date itself.
+    initial_capital : Reserved for future cash-accounting use.
+                      Not used in current return calculations.
     """
-    holding_days: int     = 5
-    top_n: int            = 5
-    min_score: float      = 0.0
-    buy_on_next_day: bool = True
+    holding_days: int      = 5
+    top_n: int             = 5
+    min_score: float       = 0.0
+    buy_on_next_day: bool  = True
     initial_capital: float = 1_000_000.0
 
 
@@ -73,7 +91,6 @@ def run_portfolio_backtest(
     ranked_signals = _normalise_dates(ranked_signals.copy())
 
     # Build lookup structures from price data
-    all_stocks    = price_df["stock_id"].unique()
     trading_dates = sorted(price_df["date"].unique())
     if not trading_dates:
         return _empty_trades(), _empty_metrics()
@@ -138,7 +155,7 @@ def run_portfolio_backtest(
         return _empty_trades(), _empty_metrics()
 
     trades  = pd.DataFrame(rows).sort_values(["entry_date", "stock_id"]).reset_index(drop=True)
-    metrics = _compute_metrics(trades, config)
+    metrics = _compute_metrics(trades)
     return trades, metrics
 
 
@@ -146,41 +163,25 @@ def run_portfolio_backtest(
 # Metrics
 # ---------------------------------------------------------------------------
 
-def _compute_metrics(trades: pd.DataFrame, config: PortfolioConfig) -> dict:
+def _compute_metrics(trades: pd.DataFrame) -> dict:
     returns = trades["return_pct"]
-    n       = len(trades)
 
-    # Portfolio equity curve: group by entry_date, average returns within each day basket
+    # Cumulative return and drawdown use the daily basket average so that
+    # holding 3 stocks on the same day counts as one portfolio day, not 3.
     daily_avg = (
         trades.groupby("entry_date")["return_pct"]
         .mean()
         .sort_index()
     )
 
-    cumulative = ((1 + daily_avg / 100).prod() - 1) * 100
-    max_dd     = _max_drawdown(daily_avg)
-
-    # Per-stock win rate uses individual trade results
-    win_rate = (returns > 0).sum() / n * 100
-
     return {
-        "num_trades":            n,
+        "num_trades":            len(returns),
         "num_trading_days":      int(daily_avg.shape[0]),
-        "win_rate_pct":          round(win_rate, 2),
-        "avg_return_pct":        round(returns.mean(), 4),
-        "cumulative_return_pct": round(cumulative, 4),
-        "max_drawdown_pct":      round(max_dd, 4),
+        "win_rate_pct":          win_rate(returns),
+        "avg_return_pct":        avg_return(returns),
+        "cumulative_return_pct": cumulative_return(daily_avg),
+        "max_drawdown_pct":      max_drawdown(daily_avg),
     }
-
-
-def _max_drawdown(daily_returns_pct: pd.Series) -> float:
-    """Maximum peak-to-trough drawdown across the equity curve."""
-    if daily_returns_pct.empty:
-        return 0.0
-    equity = (1 + daily_returns_pct / 100).cumprod()
-    peak   = equity.cummax()
-    dd     = (equity - peak) / peak * 100
-    return float(dd.min())
 
 
 # ---------------------------------------------------------------------------
