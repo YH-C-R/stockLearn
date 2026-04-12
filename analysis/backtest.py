@@ -40,7 +40,11 @@ def _should_enter(result: dict) -> bool:
     return False
 
 
-def run_backtest(data: StockData, holding_days: int = _HOLD_DAYS) -> list[dict]:
+def run_backtest(
+    data: StockData,
+    holding_days: int = _HOLD_DAYS,
+    analysis_start_date=None,
+) -> list[dict]:
     """Loop through every trading day and simulate fixed-hold trades.
 
     Entry rule :
@@ -85,6 +89,8 @@ def run_backtest(data: StockData, holding_days: int = _HOLD_DAYS) -> list[dict]:
     exit_idx: int | None = None
 
     for i, current_date in enumerate(dates):
+        if analysis_start_date is not None and current_date < analysis_start_date:
+            continue
         # exit
         if exit_idx is not None:
             if i >= exit_idx:

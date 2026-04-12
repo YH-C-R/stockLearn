@@ -7,15 +7,37 @@
   <h2>{{ stock_id }}</h2>
 </div>
 
-<!-- Analysis scores (loaded via fetch) -->
+<!-- Date range selector -->
+<section class="card date-range-card">
+  <label class="range-label">Date range</label>
+  <div class="range-inputs">
+    <input type="date" id="range-start" />
+    <span class="range-sep">→</span>
+    <input type="date" id="range-end" />
+    <button class="btn-primary" onclick="applyDateRange()">Apply</button>
+    <button class="btn-secondary" onclick="resetDateRange()">Reset (2 yr)</button>
+  </div>
+</section>
+
+<!-- Analysis scores -->
 <div id="analysis-root">
-  <p class="loading">Loading analysis for {{ stock_id }}…</p>
+  <!-- Skeleton -->
+  <section class="card skeleton-card">
+    <div class="skeleton skeleton-badge"></div>
+    <div class="skeleton skeleton-line w60"></div>
+    <div class="skeleton skeleton-line w40"></div>
+  </section>
+  <div class="score-grid">
+    <section class="card"><div class="skeleton skeleton-block"></div></section>
+    <section class="card"><div class="skeleton skeleton-block"></div></section>
+    <section class="card"><div class="skeleton skeleton-block"></div></section>
+  </div>
 </div>
 
-<!-- Chart section (always present; canvas hidden until data arrives) -->
-<section class="card" id="chart-card" style="display:none">
+<!-- Chart -->
+<section class="card" id="chart-card">
   <h3>
-    Price Chart (2 years)
+    Price Chart
     <span class="chart-legend">
       <span class="legend-dot" style="background:#4a6fa5"></span> Close
       <span class="legend-dot" style="background:#f6ad55"></span> MA20
@@ -24,30 +46,119 @@
       <span class="legend-dot legend-tri" style="color:#805ad5">▲</span> PriceVolume
     </span>
   </h3>
-  <div class="chart-wrap">
-    <canvas id="priceChart"></canvas>
+  <div class="chart-wrap" id="chart-wrap">
+    <!-- Skeleton -->
+    <div class="skeleton skeleton-chart" id="chart-skeleton"></div>
+    <canvas id="priceChart" style="display:none"></canvas>
   </div>
-  <p id="chart-error" class="error" style="display:none"></p>
+  <p id="chart-error" class="error-box" style="display:none"></p>
+</section>
+
+<!-- Backtest -->
+<section class="card" id="backtest-card">
+  <h3>Backtest (20-day hold)</h3>
+  <button id="backtest-btn" class="btn-primary" onclick="runBacktest()">Run Backtest</button>
+  <div id="backtest-result"></div>
 </section>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script>
 const stockId = "{{ stock_id }}";
+let _chart = null;
 
-// ── Analysis scores ──────────────────────────────────────────────────────────
+// ── Date range state ─────────────────────────────────────────────────────────
+
+function _isoToday() {
+  return new Date().toISOString().slice(0, 10);
+}
+function _isoTwoYearsAgo() {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - 2);
+  return d.toISOString().slice(0, 10);
+}
+
+function _initDateInputs() {
+  document.getElementById("range-end").value   = _isoToday();
+  document.getElementById("range-start").value = _isoTwoYearsAgo();
+  document.getElementById("range-end").max     = _isoToday();
+}
+
+function _getRange() {
+  return {
+    start: document.getElementById("range-start").value || null,
+    end:   document.getElementById("range-end").value   || null,
+  };
+}
+
+function _buildQuery(extra = {}) {
+  const { start, end } = _getRange();
+  const params = new URLSearchParams();
+  if (start) params.set("start", start);
+  if (end)   params.set("end",   end);
+  Object.entries(extra).forEach(([k, v]) => params.set(k, v));
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+function applyDateRange() {
+  const { start, end } = _getRange();
+  if (start && end && start > end) {
+    alert("Start date must be before end date.");
+    return;
+  }
+  if (_chart) { _chart.destroy(); _chart = null; }
+  loadAnalysis();
+  loadChart();
+}
+
+function resetDateRange() {
+  _initDateInputs();
+  applyDateRange();
+}
+
+// ── Error helpers ────────────────────────────────────────────────────────────
+
+function _errorHtml(msg, detail) {
+  return `
+    <div class="error-box">
+      <strong>⚠ ${msg}</strong>
+      ${detail ? `<p class="error-detail">${detail}</p>` : ""}
+    </div>`;
+}
+
+// ── Analysis ─────────────────────────────────────────────────────────────────
 
 async function loadAnalysis() {
   const root = document.getElementById("analysis-root");
+
+  // Show skeleton while loading
+  root.innerHTML = `
+    <section class="card skeleton-card">
+      <div class="skeleton skeleton-badge"></div>
+      <div class="skeleton skeleton-line w60"></div>
+      <div class="skeleton skeleton-line w40"></div>
+    </section>
+    <div class="score-grid">
+      <section class="card"><div class="skeleton skeleton-block"></div></section>
+      <section class="card"><div class="skeleton skeleton-block"></div></section>
+      <section class="card"><div class="skeleton skeleton-block"></div></section>
+    </div>`;
+
   try {
-    const res  = await fetch(`/api/analysis/${stockId}`);
+    const res  = await fetch(`/api/analysis/${stockId}${_buildQuery()}`);
     const data = await res.json();
+
     if (!res.ok) {
-      root.innerHTML = `<p class="error">Error: ${data.error || "Failed to load data."}</p>`;
+      root.innerHTML = _errorHtml(
+        data.error || "Failed to load analysis.",
+        data.detail || null,
+      );
       return;
     }
     root.innerHTML = renderAnalysis(data);
+
   } catch (err) {
-    root.innerHTML = `<p class="error">Network error: ${err.message}</p>`;
+    root.innerHTML = _errorHtml("Network error — could not reach the server.", err.message);
   }
 }
 
@@ -68,17 +179,11 @@ function renderAnalysis(d) {
     "AVOID":      "badge-avoid",
   }[rec.label] || "";
 
-  const reasonsHtml = rec.reasons.length
-    ? rec.reasons.map(r => `<li>${r}</li>`).join("")
-    : "<li>—</li>";
-
-  const epsHtml = lt.eps_quarters.length
-    ? lt.eps_quarters.map(v => fmt(v, 2)).join(" → ")
-    : "N/A";
-
-  const warningsHtml = d.warnings.length
-    ? `<p class="warning">⚠ ${d.warnings.join(" | ")}</p>`
-    : "";
+  const reasonsHtml = (rec.reasons || []).map(r => `<li>${r}</li>`).join("") || "<li>—</li>";
+  const epsHtml = (lt.eps_quarters || []).map(v => fmt(v, 2)).join(" → ") || "N/A";
+  const warningsHtml = (d.warnings || []).map(w =>
+    `<p class="warning-box">⚠ ${w}</p>`
+  ).join("");
 
   return `
     ${warningsHtml}
@@ -95,9 +200,9 @@ function renderAnalysis(d) {
         <div class="score-big">${fmt(lt.score, 2)}</div>
         <div class="score-class">${lt.class}</div>
         <table class="score-table">
-          <tr><td>EPS trend (50%)</td>   <td>${fmt(lt.eps_score, 2)}</td></tr>
-          <tr><td>PE re-rating (30%)</td><td>${fmt(lt.pe_score, 2)}</td></tr>
-          <tr><td>Growth (20%)</td>       <td>${fmt(lt.growth_score, 2)}</td></tr>
+          <tr><td>EPS trend (50%)</td>    <td>${fmt(lt.eps_score, 2)}</td></tr>
+          <tr><td>PE re-rating (30%)</td> <td>${fmt(lt.pe_score, 2)}</td></tr>
+          <tr><td>Growth (20%)</td>        <td>${fmt(lt.growth_score, 2)}</td></tr>
         </table>
         <p class="score-detail">Current PE: ${fmt(lt.current_pe, 1)} &nbsp;|&nbsp; Avg PE: ${fmt(lt.avg_pe, 1)}</p>
         <p class="score-detail">Last 4 qtrs EPS: ${epsHtml}</p>
@@ -122,119 +227,71 @@ function renderAnalysis(d) {
           <tr><td>PE</td>    <td>${fmt(lat.pe,    2)}</td></tr>
         </table>
       </section>
-    </div>
-  `;
+    </div>`;
 }
 
 // ── Chart ────────────────────────────────────────────────────────────────────
 
 async function loadChart() {
-  const card  = document.getElementById("chart-card");
-  const errEl = document.getElementById("chart-error");
+  const skeleton = document.getElementById("chart-skeleton");
+  const canvas   = document.getElementById("priceChart");
+  const errEl    = document.getElementById("chart-error");
+
+  skeleton.style.display = "block";
+  canvas.style.display   = "none";
+  errEl.style.display    = "none";
 
   try {
-    const res  = await fetch(`/api/chart/${stockId}`);
+    const res  = await fetch(`/api/chart/${stockId}${_buildQuery()}`);
     const data = await res.json();
 
     if (!res.ok) {
-      errEl.textContent = data.error || "Failed to load chart data.";
-      errEl.style.display = "block";
-      card.style.display  = "block";
+      skeleton.style.display = "none";
+      errEl.textContent      = data.error || "Failed to load chart data.";
+      errEl.style.display    = "block";
       return;
     }
 
-    card.style.display = "block";
+    skeleton.style.display = "none";
+    canvas.style.display   = "block";
     renderChart(data);
 
   } catch (err) {
-    errEl.textContent   = `Network error: ${err.message}`;
-    errEl.style.display = "block";
-    card.style.display  = "block";
+    skeleton.style.display = "none";
+    errEl.textContent      = `Network error: ${err.message}`;
+    errEl.style.display    = "block";
   }
 }
 
 function renderChart(data) {
-  // Build scatter point arrays for signal markers
-  // Each point: { x: dateString, y: price }
+  if (_chart) { _chart.destroy(); _chart = null; }
+
   const ddPoints = (data.signals.davis_double || [])
     .filter(s => s.price != null)
-    .map(s => ({ x: s.x || s.date, y: s.price, score: s.score }));
+    .map(s => ({ x: s.date, y: s.price, score: s.score }));
 
   const pvPoints = (data.signals.price_volume || [])
     .filter(s => s.price != null)
-    .map(s => ({ x: s.x || s.date, y: s.price, score: s.score }));
+    .map(s => ({ x: s.date, y: s.price, score: s.score }));
 
   const ctx = document.getElementById("priceChart").getContext("2d");
-
-  new Chart(ctx, {
+  _chart = new Chart(ctx, {
     type: "line",
     data: {
       labels: data.dates,
       datasets: [
-        {
-          label:           "Close",
-          data:            data.close,
-          borderColor:     "#4a6fa5",
-          borderWidth:     1.5,
-          pointRadius:     0,
-          tension:         0.1,
-          yAxisID:         "y",
-        },
-        {
-          label:           "MA20",
-          data:            data.ma20,
-          borderColor:     "#f6ad55",
-          borderWidth:     1.2,
-          borderDash:      [4, 3],
-          pointRadius:     0,
-          tension:         0.1,
-          yAxisID:         "y",
-        },
-        {
-          label:           "MA60",
-          data:            data.ma60,
-          borderColor:     "#68d391",
-          borderWidth:     1.2,
-          borderDash:      [6, 4],
-          pointRadius:     0,
-          tension:         0.1,
-          yAxisID:         "y",
-        },
-        {
-          label:           "Davis Double ★",
-          data:            ddPoints,
-          type:            "scatter",
-          borderColor:     "#e53e3e",
-          backgroundColor: "#e53e3e",
-          pointRadius:     8,
-          pointStyle:      "star",
-          showLine:        false,
-          yAxisID:         "y",
-        },
-        {
-          label:           "PriceVolume ▲",
-          data:            pvPoints,
-          type:            "scatter",
-          borderColor:     "#805ad5",
-          backgroundColor: "#805ad5",
-          pointRadius:     7,
-          pointStyle:      "triangle",
-          showLine:        false,
-          yAxisID:         "y",
-        },
+        { label: "Close",           data: data.close, borderColor: "#4a6fa5", borderWidth: 1.5, pointRadius: 0, tension: 0.1, yAxisID: "y" },
+        { label: "MA20",            data: data.ma20,  borderColor: "#f6ad55", borderWidth: 1.2, borderDash: [4,3], pointRadius: 0, tension: 0.1, yAxisID: "y" },
+        { label: "MA60",            data: data.ma60,  borderColor: "#68d391", borderWidth: 1.2, borderDash: [6,4], pointRadius: 0, tension: 0.1, yAxisID: "y" },
+        { label: "Davis Double ★",  data: ddPoints, type: "scatter", borderColor: "#e53e3e", backgroundColor: "#e53e3e", pointRadius: 8, pointStyle: "star",     showLine: false, yAxisID: "y" },
+        { label: "PriceVolume ▲",   data: pvPoints, type: "scatter", borderColor: "#805ad5", backgroundColor: "#805ad5", pointRadius: 7, pointStyle: "triangle", showLine: false, yAxisID: "y" },
       ],
     },
     options: {
-      responsive:          true,
-      maintainAspectRatio: true,
-      interaction: {
-        mode: "index",
-        intersect: false,
-      },
+      responsive: true, maintainAspectRatio: true,
+      interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: {
-          display: false,   // custom legend in HTML above the chart
-        },
+        legend: { display: false },
         tooltip: {
           callbacks: {
             label(ctx) {
@@ -248,18 +305,8 @@ function renderChart(data) {
         },
       },
       scales: {
-        x: {
-          ticks: {
-            maxTicksLimit: 12,
-            maxRotation:   30,
-          },
-          grid: { color: "#f0f0f0" },
-        },
-        y: {
-          position: "right",
-          grid:     { color: "#f0f0f0" },
-          ticks:    { maxTicksLimit: 8 },
-        },
+        x: { ticks: { maxTicksLimit: 12, maxRotation: 30 }, grid: { color: "#f0f0f0" } },
+        y: { position: "right", grid: { color: "#f0f0f0" }, ticks: { maxTicksLimit: 8 } },
       },
     },
   });
@@ -273,21 +320,26 @@ async function runBacktest() {
 
   btn.disabled    = true;
   btn.textContent = "Running… (this may take a moment)";
-  result.innerHTML = '<p class="loading">Running backtest…</p>';
+  result.innerHTML = `
+    <div class="bt-loading">
+      <span class="spinner"></span> Running backtest for ${stockId}…
+    </div>`;
 
   try {
-    const res  = await fetch(`/api/backtest/${stockId}`, { method: "POST" });
+    const res  = await fetch(`/api/backtest/${stockId}${_buildQuery()}`, { method: "POST" });
     const data = await res.json();
 
     if (!res.ok) {
-      result.innerHTML = `<p class="error">Error: ${data.error || "Backtest failed."}</p>`;
+      result.innerHTML = _errorHtml(
+        data.error || "Backtest failed.",
+        data.detail || null,
+      );
       return;
     }
-
     result.innerHTML = renderBacktest(data);
 
   } catch (err) {
-    result.innerHTML = `<p class="error">Network error: ${err.message}</p>`;
+    result.innerHTML = _errorHtml("Network error — could not reach the server.", err.message);
   } finally {
     btn.disabled    = false;
     btn.textContent = "Re-run Backtest";
@@ -303,21 +355,13 @@ function pct(val) {
 function renderBacktest(d) {
   const m = d.metrics;
 
-  const winColor      = m.win_rate   >= 50  ? "positive" : "negative";
-  const returnColor   = m.total_return >= 0  ? "positive" : "negative";
-  const drawdownColor = m.max_drawdown <= 10 ? "positive" : "negative";
-
   const tradesHtml = d.trades.length === 0
     ? `<p class="bt-no-trades">No completed trades in this period.</p>`
     : `
       <div class="bt-trades-wrap">
         <table class="bt-trades">
           <thead>
-            <tr>
-              <th>Entry</th><th>Exit</th>
-              <th>Entry Price</th><th>Exit Price</th>
-              <th>Return</th><th>Decision</th>
-            </tr>
+            <tr><th>Entry</th><th>Exit</th><th>Entry Price</th><th>Exit Price</th><th>Return</th><th>Decision</th></tr>
           </thead>
           <tbody>
             ${d.trades.slice(0, 10).map(t => `
@@ -328,56 +372,27 @@ function renderBacktest(d) {
                 <td>${t.exit_price}</td>
                 <td class="${t.return >= 0 ? "positive" : "negative"}">${pct(t.return)}</td>
                 <td><span class="decision-tag">${t.decision}</span></td>
-              </tr>
-            `).join("")}
+              </tr>`).join("")}
           </tbody>
         </table>
         ${d.trades.length > 10 ? `<p class="bt-more">Showing 10 of ${d.trades.length} trades.</p>` : ""}
-      </div>
-    `;
+      </div>`;
 
   return `
     <div class="bt-period">Period: ${d.period.start} → ${d.period.end} &nbsp;|&nbsp; Stock: ${d.stock_id}</div>
-
     <div class="bt-metrics">
-      <div class="bt-metric">
-        <div class="bt-metric-label">Trades</div>
-        <div class="bt-metric-value">${m.number_of_trades}</div>
-      </div>
-      <div class="bt-metric">
-        <div class="bt-metric-label">Win Rate</div>
-        <div class="bt-metric-value ${winColor}">${m.win_rate}%</div>
-      </div>
-      <div class="bt-metric">
-        <div class="bt-metric-label">Avg Return</div>
-        <div class="bt-metric-value ${m.average_return >= 0 ? "positive" : "negative"}">${pct(m.average_return)}</div>
-      </div>
-      <div class="bt-metric">
-        <div class="bt-metric-label">Total Return</div>
-        <div class="bt-metric-value ${returnColor}">${pct(m.total_return)}</div>
-      </div>
-      <div class="bt-metric">
-        <div class="bt-metric-label">Max Drawdown</div>
-        <div class="bt-metric-value ${drawdownColor}">-${m.max_drawdown}%</div>
-      </div>
+      <div class="bt-metric"><div class="bt-metric-label">Trades</div><div class="bt-metric-value">${m.number_of_trades}</div></div>
+      <div class="bt-metric"><div class="bt-metric-label">Win Rate</div><div class="bt-metric-value ${m.win_rate >= 50 ? "positive" : "negative"}">${m.win_rate}%</div></div>
+      <div class="bt-metric"><div class="bt-metric-label">Avg Return</div><div class="bt-metric-value ${m.average_return >= 0 ? "positive" : "negative"}">${pct(m.average_return)}</div></div>
+      <div class="bt-metric"><div class="bt-metric-label">Total Return</div><div class="bt-metric-value ${m.total_return >= 0 ? "positive" : "negative"}">${pct(m.total_return)}</div></div>
+      <div class="bt-metric"><div class="bt-metric-label">Max Drawdown</div><div class="bt-metric-value ${m.max_drawdown <= 10 ? "positive" : "negative"}">-${m.max_drawdown}%</div></div>
     </div>
-
-    ${tradesHtml}
-  `;
+    ${tradesHtml}`;
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
+_initDateInputs();
 loadAnalysis();
 loadChart();
 </script>
-
-<!-- Backtest section (always in DOM, below the chart) -->
-<section class="card" id="backtest-card">
-  <h3>Backtest (2 years, 20-day hold)</h3>
-  <button id="backtest-btn" class="btn-primary" onclick="runBacktest()">
-    Run Backtest
-  </button>
-  <div id="backtest-result"></div>
-</section>
-
 {% endblock %}

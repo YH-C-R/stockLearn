@@ -80,7 +80,7 @@ def _build_summary(decision: FinalDecisionResult) -> str:
     if decision.final_decision == FinalDecision.STRONG_BUY:
         return "基本面強勁 + 短期動能良好，可積極進場"
 
-    if decision.final_decision == FinalDecision.BUY:
+    if decision.final_decision in (FinalDecision.BUY, FinalDecision.TRADE):
         return "基本面良好，目前時機尚可，適合分批進場"
 
     if decision.final_decision == FinalDecision.WAIT:

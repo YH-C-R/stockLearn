@@ -8,7 +8,7 @@ Usage
 """
 
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -21,6 +21,7 @@ from data.single_stock_loader import load_stock
 DEFAULT_STOCK_ID = "2330"
 DEFAULT_START    = date(2023, 1, 1)
 DEFAULT_END      = date(2025, 12, 31)
+WARMUP_DAYS = 400
 
 
 def parse_args() -> tuple[str, date, date]:
@@ -45,7 +46,8 @@ def main() -> None:
 
     # ── Load data ─────────────────────────────────────────────────────────────
     print("  Loading data...")
-    data = load_stock(stock_id, start_date, end_date, token=FINMIND_TOKEN or None)
+    load_start_date = start_date - timedelta(days=WARMUP_DAYS)
+    data = load_stock(stock_id, load_start_date, end_date, token=FINMIND_TOKEN or None)
 
     if data.daily.empty:
         print(f"  No data for {stock_id}. Aborting.")
@@ -53,7 +55,7 @@ def main() -> None:
 
     # ── Run backtest ──────────────────────────────────────────────────────────
     print("  Running backtest (this may take a moment)...\n")
-    trades = run_backtest(data)
+    trades = run_backtest(data, analysis_start_date=start_date)
 
     # ── Metrics ───────────────────────────────────────────────────────────────
     metrics = summarize_backtest(trades)
