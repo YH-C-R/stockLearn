@@ -7,28 +7,45 @@
   <h2>{{ stock_id }}</h2>
 </div>
 
-<!-- Loading state: shown until JS replaces it -->
+<!-- Analysis scores (loaded via fetch) -->
 <div id="analysis-root">
   <p class="loading">Loading analysis for {{ stock_id }}…</p>
 </div>
 
+<!-- Chart section (always present; canvas hidden until data arrives) -->
+<section class="card" id="chart-card" style="display:none">
+  <h3>
+    Price Chart (2 years)
+    <span class="chart-legend">
+      <span class="legend-dot" style="background:#4a6fa5"></span> Close
+      <span class="legend-dot" style="background:#f6ad55"></span> MA20
+      <span class="legend-dot" style="background:#68d391"></span> MA60
+      <span class="legend-dot legend-star" style="color:#e53e3e">★</span> Davis Double
+      <span class="legend-dot legend-tri" style="color:#805ad5">▲</span> PriceVolume
+    </span>
+  </h3>
+  <div class="chart-wrap">
+    <canvas id="priceChart"></canvas>
+  </div>
+  <p id="chart-error" class="error" style="display:none"></p>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script>
 const stockId = "{{ stock_id }}";
 
+// ── Analysis scores ──────────────────────────────────────────────────────────
+
 async function loadAnalysis() {
   const root = document.getElementById("analysis-root");
-
   try {
     const res  = await fetch(`/api/analysis/${stockId}`);
     const data = await res.json();
-
     if (!res.ok) {
       root.innerHTML = `<p class="error">Error: ${data.error || "Failed to load data."}</p>`;
       return;
     }
-
     root.innerHTML = renderAnalysis(data);
-
   } catch (err) {
     root.innerHTML = `<p class="error">Network error: ${err.message}</p>`;
   }
@@ -65,8 +82,6 @@ function renderAnalysis(d) {
 
   return `
     ${warningsHtml}
-
-    <!-- Recommendation banner -->
     <section class="card recommendation-card">
       <span class="badge ${recClass}">${rec.label}</span>
       <span class="action-label">Action: <strong>${rec.action}</strong></span>
@@ -74,23 +89,19 @@ function renderAnalysis(d) {
       <p class="summary">${rec.summary}</p>
       <ul class="reasons">${reasonsHtml}</ul>
     </section>
-
-    <!-- Score panels -->
     <div class="score-grid">
-
       <section class="card">
         <h3>Long-Term Score</h3>
         <div class="score-big">${fmt(lt.score, 2)}</div>
         <div class="score-class">${lt.class}</div>
         <table class="score-table">
-          <tr><td>EPS trend (50%)</td>  <td>${fmt(lt.eps_score, 2)}</td></tr>
+          <tr><td>EPS trend (50%)</td>   <td>${fmt(lt.eps_score, 2)}</td></tr>
           <tr><td>PE re-rating (30%)</td><td>${fmt(lt.pe_score, 2)}</td></tr>
-          <tr><td>Growth (20%)</td>      <td>${fmt(lt.growth_score, 2)}</td></tr>
+          <tr><td>Growth (20%)</td>       <td>${fmt(lt.growth_score, 2)}</td></tr>
         </table>
         <p class="score-detail">Current PE: ${fmt(lt.current_pe, 1)} &nbsp;|&nbsp; Avg PE: ${fmt(lt.avg_pe, 1)}</p>
         <p class="score-detail">Last 4 qtrs EPS: ${epsHtml}</p>
       </section>
-
       <section class="card">
         <h3>Short-Term Score</h3>
         <div class="score-big">${fmt(st.score, 2)}</div>
@@ -102,7 +113,6 @@ function renderAnalysis(d) {
         </table>
         <p class="score-detail">MA20: ${fmt(st.ma20, 1)} &nbsp;|&nbsp; MA60: ${fmt(st.ma60, 1)}</p>
       </section>
-
       <section class="card">
         <h3>Latest Data</h3>
         <table class="score-table">
@@ -112,11 +122,151 @@ function renderAnalysis(d) {
           <tr><td>PE</td>    <td>${fmt(lat.pe,    2)}</td></tr>
         </table>
       </section>
-
     </div>
   `;
 }
 
+// ── Chart ────────────────────────────────────────────────────────────────────
+
+async function loadChart() {
+  const card  = document.getElementById("chart-card");
+  const errEl = document.getElementById("chart-error");
+
+  try {
+    const res  = await fetch(`/api/chart/${stockId}`);
+    const data = await res.json();
+
+    if (!res.ok) {
+      errEl.textContent = data.error || "Failed to load chart data.";
+      errEl.style.display = "block";
+      card.style.display  = "block";
+      return;
+    }
+
+    card.style.display = "block";
+    renderChart(data);
+
+  } catch (err) {
+    errEl.textContent   = `Network error: ${err.message}`;
+    errEl.style.display = "block";
+    card.style.display  = "block";
+  }
+}
+
+function renderChart(data) {
+  // Build scatter point arrays for signal markers
+  // Each point: { x: dateString, y: price }
+  const ddPoints = (data.signals.davis_double || [])
+    .filter(s => s.price != null)
+    .map(s => ({ x: s.x || s.date, y: s.price, score: s.score }));
+
+  const pvPoints = (data.signals.price_volume || [])
+    .filter(s => s.price != null)
+    .map(s => ({ x: s.x || s.date, y: s.price, score: s.score }));
+
+  const ctx = document.getElementById("priceChart").getContext("2d");
+
+  new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: data.dates,
+      datasets: [
+        {
+          label:           "Close",
+          data:            data.close,
+          borderColor:     "#4a6fa5",
+          borderWidth:     1.5,
+          pointRadius:     0,
+          tension:         0.1,
+          yAxisID:         "y",
+        },
+        {
+          label:           "MA20",
+          data:            data.ma20,
+          borderColor:     "#f6ad55",
+          borderWidth:     1.2,
+          borderDash:      [4, 3],
+          pointRadius:     0,
+          tension:         0.1,
+          yAxisID:         "y",
+        },
+        {
+          label:           "MA60",
+          data:            data.ma60,
+          borderColor:     "#68d391",
+          borderWidth:     1.2,
+          borderDash:      [6, 4],
+          pointRadius:     0,
+          tension:         0.1,
+          yAxisID:         "y",
+        },
+        {
+          label:           "Davis Double ★",
+          data:            ddPoints,
+          type:            "scatter",
+          borderColor:     "#e53e3e",
+          backgroundColor: "#e53e3e",
+          pointRadius:     8,
+          pointStyle:      "star",
+          showLine:        false,
+          yAxisID:         "y",
+        },
+        {
+          label:           "PriceVolume ▲",
+          data:            pvPoints,
+          type:            "scatter",
+          borderColor:     "#805ad5",
+          backgroundColor: "#805ad5",
+          pointRadius:     7,
+          pointStyle:      "triangle",
+          showLine:        false,
+          yAxisID:         "y",
+        },
+      ],
+    },
+    options: {
+      responsive:          true,
+      maintainAspectRatio: true,
+      interaction: {
+        mode: "index",
+        intersect: false,
+      },
+      plugins: {
+        legend: {
+          display: false,   // custom legend in HTML above the chart
+        },
+        tooltip: {
+          callbacks: {
+            label(ctx) {
+              if (ctx.dataset.label.startsWith("Davis") || ctx.dataset.label.startsWith("Price")) {
+                const pt = ctx.raw;
+                return `${ctx.dataset.label}  price: ${pt.y}  score: ${pt.score ?? ""}`;
+              }
+              return `${ctx.dataset.label}: ${ctx.parsed.y ?? "—"}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: {
+            maxTicksLimit: 12,
+            maxRotation:   30,
+          },
+          grid: { color: "#f0f0f0" },
+        },
+        y: {
+          position: "right",
+          grid:     { color: "#f0f0f0" },
+          ticks:    { maxTicksLimit: 8 },
+        },
+      },
+    },
+  });
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
 loadAnalysis();
+loadChart();
 </script>
 {% endblock %}

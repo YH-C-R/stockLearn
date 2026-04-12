@@ -236,3 +236,51 @@ main {
 .loading { color: #a0aec0; font-style: italic; padding: 20px 0; }
 .error   { color: #e53e3e; padding: 20px 0; }
 .warning { color: #c05621; background: #fffaf0; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 0.88rem; }
+
+/* ── Chart ────────────────────────────────────────────────────────────────── */
+.chart-wrap {
+  position: relative;
+  height: 340px;
+}
+
+.chart-wrap canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.card h3 {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: #4a5568;
+  flex-wrap: wrap;
+}
+
+.legend-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.legend-dot::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.legend-star::before,
+.legend-tri::before {
+  content: none;
+}
