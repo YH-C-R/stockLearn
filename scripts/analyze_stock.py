@@ -16,7 +16,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from analysis.recommendation import print_recommendation, recommend
+from analysis.decision_engine import make_decision, print_decision
+from analysis.long_term_scorer import print_long_term_score, score_long_term
+from analysis.short_term_scorer import print_short_term_score, score_short_term
+from analysis.recommendation import print_recommendation, recommend_from_decision
 from analysis.single_stock_analysis import analyze_stock
 from analysis.single_stock_scoring import score_stock
 from config.credentials import FINMIND_TOKEN
@@ -110,8 +113,24 @@ def main() -> None:
 
     # ── 4. Recommendation ─────────────────────────────────────────────────────
     section("4. Recommendation")
-    rec = recommend(scored, data)
+    lt  = score_long_term(data)
+    st  = score_short_term(data)
+    dec = make_decision(lt, st)
+
+    rec = recommend_from_decision(dec)
     print_recommendation(rec)
+
+    # ── 5. Long-term fundamental score ────────────────────────────────────────
+    section("5. Long-Term Fundamental Score")
+    print_long_term_score(lt)
+
+    # ── 6. Short-term timing score ────────────────────────────────────────────
+    section("6. Short-Term Timing Score")
+    print_short_term_score(st)
+
+    # ── 7. Final decision ─────────────────────────────────────────────────────
+    section("7. Final Decision")
+    print_decision(dec)
 
 
 if __name__ == "__main__":
