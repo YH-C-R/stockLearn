@@ -71,6 +71,23 @@ class StockData:
         }
 
 
+def get_data_until(data: StockData, current_date: date) -> StockData:
+    """Return a new StockData containing only rows up to and including current_date.
+
+    The original StockData is not modified.
+    """
+    mask = data.daily["date"] <= current_date
+    sliced = data.daily.loc[mask].reset_index(drop=True)
+
+    return StockData(
+        stock_id   = data.stock_id,
+        start_date = data.start_date,
+        end_date   = current_date,
+        daily      = sliced,
+        warnings   = list(data.warnings),
+    )
+
+
 def load_stock(
     stock_id:   str,
     start_date: date,
