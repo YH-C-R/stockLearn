@@ -265,8 +265,119 @@ function renderChart(data) {
   });
 }
 
+// ── Backtest ─────────────────────────────────────────────────────────────────
+
+async function runBacktest() {
+  const btn    = document.getElementById("backtest-btn");
+  const result = document.getElementById("backtest-result");
+
+  btn.disabled    = true;
+  btn.textContent = "Running… (this may take a moment)";
+  result.innerHTML = '<p class="loading">Running backtest…</p>';
+
+  try {
+    const res  = await fetch(`/api/backtest/${stockId}`, { method: "POST" });
+    const data = await res.json();
+
+    if (!res.ok) {
+      result.innerHTML = `<p class="error">Error: ${data.error || "Backtest failed."}</p>`;
+      return;
+    }
+
+    result.innerHTML = renderBacktest(data);
+
+  } catch (err) {
+    result.innerHTML = `<p class="error">Network error: ${err.message}</p>`;
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = "Re-run Backtest";
+  }
+}
+
+function pct(val) {
+  if (val == null) return "N/A";
+  const sign = val >= 0 ? "+" : "";
+  return `${sign}${Number(val).toFixed(2)}%`;
+}
+
+function renderBacktest(d) {
+  const m = d.metrics;
+
+  const winColor      = m.win_rate   >= 50  ? "positive" : "negative";
+  const returnColor   = m.total_return >= 0  ? "positive" : "negative";
+  const drawdownColor = m.max_drawdown <= 10 ? "positive" : "negative";
+
+  const tradesHtml = d.trades.length === 0
+    ? `<p class="bt-no-trades">No completed trades in this period.</p>`
+    : `
+      <div class="bt-trades-wrap">
+        <table class="bt-trades">
+          <thead>
+            <tr>
+              <th>Entry</th><th>Exit</th>
+              <th>Entry Price</th><th>Exit Price</th>
+              <th>Return</th><th>Decision</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${d.trades.slice(0, 10).map(t => `
+              <tr>
+                <td>${t.entry_date}</td>
+                <td>${t.exit_date}</td>
+                <td>${t.entry_price}</td>
+                <td>${t.exit_price}</td>
+                <td class="${t.return >= 0 ? "positive" : "negative"}">${pct(t.return)}</td>
+                <td><span class="decision-tag">${t.decision}</span></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+        ${d.trades.length > 10 ? `<p class="bt-more">Showing 10 of ${d.trades.length} trades.</p>` : ""}
+      </div>
+    `;
+
+  return `
+    <div class="bt-period">Period: ${d.period.start} → ${d.period.end} &nbsp;|&nbsp; Stock: ${d.stock_id}</div>
+
+    <div class="bt-metrics">
+      <div class="bt-metric">
+        <div class="bt-metric-label">Trades</div>
+        <div class="bt-metric-value">${m.number_of_trades}</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-label">Win Rate</div>
+        <div class="bt-metric-value ${winColor}">${m.win_rate}%</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-label">Avg Return</div>
+        <div class="bt-metric-value ${m.average_return >= 0 ? "positive" : "negative"}">${pct(m.average_return)}</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-label">Total Return</div>
+        <div class="bt-metric-value ${returnColor}">${pct(m.total_return)}</div>
+      </div>
+      <div class="bt-metric">
+        <div class="bt-metric-label">Max Drawdown</div>
+        <div class="bt-metric-value ${drawdownColor}">-${m.max_drawdown}%</div>
+      </div>
+    </div>
+
+    ${tradesHtml}
+  `;
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────────────
 loadAnalysis();
 loadChart();
 </script>
+
+<!-- Backtest section (always in DOM, below the chart) -->
+<section class="card" id="backtest-card">
+  <h3>Backtest (2 years, 20-day hold)</h3>
+  <button id="backtest-btn" class="btn-primary" onclick="runBacktest()">
+    Run Backtest
+  </button>
+  <div id="backtest-result"></div>
+</section>
+
 {% endblock %}

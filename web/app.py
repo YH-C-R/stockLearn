@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from web.routes.analysis import router as analysis_router
+from web.routes.backtest import router as backtest_router
 from web.routes.chart import router as chart_router
 from web.routes.stocks import router as stocks_router
 
@@ -41,6 +42,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 app.include_router(analysis_router)
+app.include_router(backtest_router)
 app.include_router(chart_router)
 app.include_router(stocks_router)
 
