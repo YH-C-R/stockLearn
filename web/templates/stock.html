@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}{{ stock_id }} — Analysis{% endblock %}
+
+{% block content %}
+<div class="stock-header">
+  <a href="/" class="back-link">← Back</a>
+  <h2>{{ stock_id }}</h2>
+</div>
+
+<!-- Loading state: shown until JS replaces it -->
+<div id="analysis-root">
+  <p class="loading">Loading analysis for {{ stock_id }}…</p>
+</div>
+
+<script>
+const stockId = "{{ stock_id }}";
+
+async function loadAnalysis() {
+  const root = document.getElementById("analysis-root");
+
+  try {
+    const res  = await fetch(`/api/analysis/${stockId}`);
+    const data = await res.json();
+
+    if (!res.ok) {
+      root.innerHTML = `<p class="error">Error: ${data.error || "Failed to load data."}</p>`;
+      return;
+    }
+
+    root.innerHTML = renderAnalysis(data);
+
+  } catch (err) {
+    root.innerHTML = `<p class="error">Network error: ${err.message}</p>`;
+  }
+}
+
+function fmt(val, digits = 4) {
+  return val != null ? Number(val).toFixed(digits) : "N/A";
+}
+
+function renderAnalysis(d) {
+  const rec = d.recommendation;
+  const lt  = d.long_term;
+  const st  = d.short_term;
+  const lat = d.latest;
+
+  const recClass = {
+    "STRONG BUY": "badge-strong-buy",
+    "BUY":        "badge-buy",
+    "WAIT":       "badge-wait",
+    "AVOID":      "badge-avoid",
+  }[rec.label] || "";
+
+  const reasonsHtml = rec.reasons.length
+    ? rec.reasons.map(r => `<li>${r}</li>`).join("")
+    : "<li>—</li>";
+
+  const epsHtml = lt.eps_quarters.length
+    ? lt.eps_quarters.map(v => fmt(v, 2)).join(" → ")
+    : "N/A";
+
+  const warningsHtml = d.warnings.length
+    ? `<p class="warning">⚠ ${d.warnings.join(" | ")}</p>`
+    : "";
+
+  return `
+    ${warningsHtml}
+
+    <!-- Recommendation banner -->
+    <section class="card recommendation-card">
+      <span class="badge ${recClass}">${rec.label}</span>
+      <span class="action-label">Action: <strong>${rec.action}</strong></span>
+      <span class="confidence">Confidence: ${fmt(rec.confidence, 2)}</span>
+      <p class="summary">${rec.summary}</p>
+      <ul class="reasons">${reasonsHtml}</ul>
+    </section>
+
+    <!-- Score panels -->
+    <div class="score-grid">
+
+      <section class="card">
+        <h3>Long-Term Score</h3>
+        <div class="score-big">${fmt(lt.score, 2)}</div>
+        <div class="score-class">${lt.class}</div>
+        <table class="score-table">
+          <tr><td>EPS trend (50%)</td>  <td>${fmt(lt.eps_score, 2)}</td></tr>
+          <tr><td>PE re-rating (30%)</td><td>${fmt(lt.pe_score, 2)}</td></tr>
+          <tr><td>Growth (20%)</td>      <td>${fmt(lt.growth_score, 2)}</td></tr>
+        </table>
+        <p class="score-detail">Current PE: ${fmt(lt.current_pe, 1)} &nbsp;|&nbsp; Avg PE: ${fmt(lt.avg_pe, 1)}</p>
+        <p class="score-detail">Last 4 qtrs EPS: ${epsHtml}</p>
+      </section>
+
+      <section class="card">
+        <h3>Short-Term Score</h3>
+        <div class="score-big">${fmt(st.score, 2)}</div>
+        <div class="score-class">${st.signal}</div>
+        <table class="score-table">
+          <tr><td>Price (30%)</td>  <td>${fmt(st.price_score, 2)}</td></tr>
+          <tr><td>Volume (40%)</td> <td>${fmt(st.volume_score, 2)}</td></tr>
+          <tr><td>Margin (30%)</td> <td>${fmt(st.margin_score, 2)}</td></tr>
+        </table>
+        <p class="score-detail">MA20: ${fmt(st.ma20, 1)} &nbsp;|&nbsp; MA60: ${fmt(st.ma60, 1)}</p>
+      </section>
+
+      <section class="card">
+        <h3>Latest Data</h3>
+        <table class="score-table">
+          <tr><td>Date</td>  <td>${lat.date  ?? "N/A"}</td></tr>
+          <tr><td>Close</td> <td>${fmt(lat.close, 2)}</td></tr>
+          <tr><td>EPS</td>   <td>${fmt(lat.eps,   2)}</td></tr>
+          <tr><td>PE</td>    <td>${fmt(lat.pe,    2)}</td></tr>
+        </table>
+      </section>
+
+    </div>
+  `;
+}
+
+loadAnalysis();
+</script>
+{% endblock %}

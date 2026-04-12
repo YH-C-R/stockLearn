@@ -1,0 +1,15 @@
+<!-- Partial: watchlist rows. Swapped in-place by HTMX on add/remove. -->
+{% for stock in stocks %}
+<tr>
+  <td><a href="/stock/{{ stock }}">{{ stock }}</a></td>
+  <td>
+    <button
+      hx-delete="/stocks/{{ stock }}"
+      hx-target="#watchlist-body"
+      hx-swap="innerHTML"
+      class="btn-remove">Remove</button>
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="2" class="empty">No stocks in watchlist.</td></tr>
+{% endfor %}

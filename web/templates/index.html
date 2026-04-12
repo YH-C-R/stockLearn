@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Watchlist — Stock Analysis{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Watchlist</h2>
+
+  <!-- Add stock form — HTMX posts, swaps the table body on success -->
+  <form
+    hx-post="/stocks/add"
+    hx-target="#watchlist-body"
+    hx-swap="innerHTML"
+    hx-on::after-request="this.reset()"
+    class="add-form">
+    <input
+      type="text"
+      name="stock_id"
+      placeholder="Stock ID (e.g. 2330)"
+      required
+      class="input-stock" />
+    <button type="submit" class="btn-primary">Add</button>
+  </form>
+
+  <table class="watchlist-table">
+    <thead>
+      <tr>
+        <th>Stock ID</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody id="watchlist-body">
+      {% include "partials/watchlist.html" %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
