@@ -8,20 +8,17 @@ Usage
 """
 
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from analysis.backtest import run_backtest
-from analysis.backtest_metrics import summarize_backtest
+from analysis.backtest_service import NoDataError, run_backtest_flow
 from config.credentials import FINMIND_TOKEN
-from data.single_stock_loader import load_stock
 
 DEFAULT_STOCK_ID = "2330"
 DEFAULT_START    = date(2023, 1, 1)
 DEFAULT_END      = date(2025, 12, 31)
-WARMUP_DAYS = 400
 
 
 def parse_args() -> tuple[str, date, date]:
@@ -44,21 +41,21 @@ def main() -> None:
     print(f"  Backtest  |  {stock_id}  |  {start_date}  →  {end_date}")
     print(div)
 
-    # ── Load data ─────────────────────────────────────────────────────────────
+    # ── Load data + run backtest ──────────────────────────────────────────────
     print("  Loading data...")
-    load_start_date = start_date - timedelta(days=WARMUP_DAYS)
-    data = load_stock(stock_id, load_start_date, end_date, token=FINMIND_TOKEN or None)
-
-    if data.daily.empty:
+    try:
+        result = run_backtest_flow(
+            stock_id, start_date, end_date, token=FINMIND_TOKEN or None
+        )
+    except NoDataError:
         print(f"  No data for {stock_id}. Aborting.")
         sys.exit(1)
 
-    # ── Run backtest ──────────────────────────────────────────────────────────
+    print(f"  Data loaded: {result.loaded_start} → {result.loaded_end}")
     print("  Running backtest (this may take a moment)...\n")
-    trades = run_backtest(data, analysis_start_date=start_date)
 
-    # ── Metrics ───────────────────────────────────────────────────────────────
-    metrics = summarize_backtest(trades)
+    trades  = result.trades
+    metrics = result.metrics
 
     print(f"{div}")
     print(f"  Metrics")

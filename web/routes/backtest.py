@@ -15,10 +15,8 @@ from typing import Optional
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
-from analysis.backtest import run_backtest
-from analysis.backtest_metrics import summarize_backtest
+from analysis.backtest_service import NoDataError, run_backtest_flow
 from config.credentials import FINMIND_TOKEN
-from data.single_stock_loader import load_stock
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -51,34 +49,26 @@ async def run_backtest_endpoint(
             "detail": str(exc),
         })
 
-    # ── Load data ─────────────────────────────────────────────────────────────
+    # ── Load data + run backtest ──────────────────────────────────────────────
     try:
-        data = load_stock(sid, start_date, end_date, token=FINMIND_TOKEN or None)
-    except Exception as exc:
-        logger.exception("load_stock failed for %s", sid)
-        return JSONResponse(status_code=502, content={
-            "error": "Failed to fetch market data. The data provider may be unavailable.",
-            "detail": str(exc),
-        })
-
-    if data.daily.empty:
+        result = run_backtest_flow(
+            sid, start_date, end_date, token=FINMIND_TOKEN or None
+        )
+    except NoDataError:
         return JSONResponse(status_code=404, content={
             "error": f"No price data found for {sid} in the selected date range.",
         })
-
-    actual_start = str(data.daily["date"].min())
-    actual_end   = str(data.daily["date"].max())
-
-    # ── Run backtest ──────────────────────────────────────────────────────────
-    try:
-        trades  = run_backtest(data)
-        metrics = summarize_backtest(trades)
     except Exception as exc:
         logger.exception("Backtest failed for %s", sid)
         return JSONResponse(status_code=500, content={
             "error": "Backtest computation failed.",
             "detail": str(exc),
         })
+
+    trades       = result.trades
+    metrics      = result.metrics
+    actual_start = str(result.loaded_start)
+    actual_end   = str(result.loaded_end)
 
     completed  = [t for t in trades if t["return"] is not None]
     trades_out = [
